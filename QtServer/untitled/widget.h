@@ -2,6 +2,7 @@
 #define WIDGET_H
 
 #include <QWidget>
+#include <QTimer>
 #include "datastore.h"
 #include "tcpserver.h"
 #include "chartwidget.h"
@@ -22,14 +23,18 @@ private slots:
     void onLine(const QByteArray &line);
     void onClientConnected(const QString& peer);
     void onClientDisconnected();
+    void onHeartbeatTick();
 private:
     TcpServer *m_tcp;
     Ui::Widget *ui;
+    QTimer* m_timer;
+    qint64 m_lastRxMs=0;
     quint64 m_rx=0;  //收到的包数
     quint64 m_lost=0; //丢包数
     quint64 m_bad=0; //坏帧数（JSON 解析失败的行数）
     quint32 m_lastSeq=0; //上一个包的包号
     bool m_haveLast=false;    //bool，是否已经收到过第一个包
+
 
     ChartWidget *m_chart;
 

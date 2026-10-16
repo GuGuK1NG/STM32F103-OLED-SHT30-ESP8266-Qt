@@ -15,6 +15,9 @@ Widget::Widget(QWidget *parent)
     connect(m_tcp, &TcpServer::clientDisconnected, this, &Widget::onClientDisconnected);
     m_tcp->listen(8888);
 
+    m_timer = new QTimer();
+    m_timer->start(1000);
+    connect(m_timer, &QTimer::timeout, this, &Widget::onHeartbeatTick);
     auto *layout = new QVBoxLayout(ui->chartBox);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
@@ -52,6 +55,7 @@ void Widget::onLine(const QByteArray &line)
         }//设备重启
     }
     m_lastSeq=s.seq;
+    m_lastRxMs=s.pcMs;
     m_haveLast=true;
     m_rx++;
     ui->lblTemp->setText(QString::number(s.t, 'f', 2) + " C");
@@ -65,14 +69,35 @@ void Widget::onLine(const QByteArray &line)
 
 void Widget::onClientConnected(const QString &peer)
 {
-    ui->lblConnST->setText("已连接"+peer);
+    ui->lblConnST->setText("已连接");
     ui->lblConnST->setStyleSheet("color: green;");
+    m_lastRxMs=0;
 }
 
 void Widget::onClientDisconnected()
 {
     ui->lblConnST->setText("未连接");
     ui->lblConnST->setStyleSheet("color: red;");
+}
+
+void Widget::onHeartbeatTick()
+{
+    if (m_lastRxMs == 0) {  return; }
+    const qint64 elapsed = QDateTime::currentMSecsSinceEpoch() - m_lastRxMs;
+
+    const double sec = elapsed / 1000.0;
+
+    if (sec <= 3) {
+        ui->lblHbST->setText(QStringLiteral("正常"));
+        ui->lblHbST->setStyleSheet("color: green;");
+    } else {
+        ui->lblHbST->setText(QStringLiteral("超时"));
+        ui->lblHbST->setStyleSheet("color: red;");
+    }
+    if(sec>=30){
+        m_tcp->disconnectClient();
+    }
+    return;
 }
 
 

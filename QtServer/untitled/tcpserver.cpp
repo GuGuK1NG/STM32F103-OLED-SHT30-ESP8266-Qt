@@ -29,6 +29,7 @@ void TcpServer::onNewConnection()
     if(clientSocket==nullptr){
         return;
     }
+    m_rxBuf.clear();
     connect(clientSocket,&QTcpSocket::readyRead,this,&TcpServer::onReadyRead);
     connect(clientSocket,&QTcpSocket::disconnected,this,&TcpServer::onDisconnected);
     emit clientConnected(clientSocket->peerAddress().toString());
@@ -58,6 +59,13 @@ void TcpServer::onReadyRead()
 void TcpServer::onDisconnected()
 {
     emit clientDisconnected();
+    qDebug()<<"Disconnection: "<<clientSocket->peerAddress().toString();
     clientSocket->deleteLater();
     clientSocket=nullptr;
+}
+
+void TcpServer::disconnectClient()
+{
+    if (clientSocket != nullptr)
+        clientSocket->disconnectFromHost();
 }

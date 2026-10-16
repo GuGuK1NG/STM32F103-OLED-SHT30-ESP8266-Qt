@@ -25,10 +25,14 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
+#include <string.h>
 #include "bsp_dwt.h"
 #include "bsp_i2c.h"
 #include "bsp_oled.h"
 #include "bsp_sht30.h"
+#include "app_frame.h"
+#include "bsp_esp_uart.h"
+#include "bsp_esp.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -92,25 +96,31 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART1_UART_Init();
+  MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
   dwt_init();
-  static uint32_t cnt = 0;
   i2c_soft_init(&bus_oled);
   i2c_soft_init(&bus_sht30);
 
   oled_init(&bus_oled);
   sht30_init(&bus_sht30);
-
+  esp_uart_init();
+  esp_init();
   oled_clear();
-  oled_show_string(0, 0, "PJ1 boot ok", 16);
   oled_show_string(0, 16, "T x10:", 16);
   oled_show_string(0, 32, "H x10:", 16);
   oled_refresh();
 
-  uint32_t t_read=0;// 上次读取传感器的时间
-  uint32_t t_led=0;// 上次翻转LED的时间
-  uint32_t disp_t=0xFFFFFFFF;// 上次显示的温度
-  uint32_t disp_h=0xFFFFFFFF;// 上次显示的湿度
+  uint32_t t_read = 0;          // 上次读取传感器的时间
+  uint32_t t_led = 0;           // 上次翻转 LED 的时间
+  uint32_t disp_t = 0xFFFFFFFF; // 上次显示的温度
+  uint32_t disp_h = 0xFFFFFFFF; // 上次显示的湿度
+
+  uint32_t t_report = 0;   // 上次上报的时刻
+  uint32_t seq      = 0;   // 上报包号
+  int32_t  t_x100   = 0;   // 温度 ×100（定点）
+  int32_t  h_x100   = 0;   // 湿度 ×100（定点）
+  uint8_t  s_valid  = 0;   // 是否已有有效数据
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -121,17 +131,23 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     uint32_t now = HAL_GetTick();
+
+    /* ---- 1. 传感器：1 秒触发一次采集，状态机每轮推进 ---- */
     if (now - t_read >= 1000)
     {
-      // 每秒读取一次传感器
       t_read = now;
       sht30_start();
     }
     sht30_task();
 
+    /* ---- 2. 温湿度显示：只在数值变化时重画 ---- */
     float t, h;
     if (sht30_get(&t, &h) == 0)
     {
+      t_x100=(int32_t)(t*100.0f+(t>=0?0.5f:-0.5f));
+      h_x100=(int32_t)(h*100.0f+(h>=0?0.5f:-0.5f));
+      s_valid=1;
+
       uint32_t t10 = (uint32_t)(t * 10);
       uint32_t h10 = (uint32_t)(h * 10);
       if (t10 != disp_t || h10 != disp_h)
@@ -144,7 +160,43 @@ int main(void)
       }
     }
 
-    // 每 500ms 翻转一次 LED
+    /* ---- 3. ESP 状态机：必须每轮调用 ---- */
+    esp_task();
+    /*上报*/
+    if(now-t_report>=1000){
+      t_report=now;
+      if(s_valid){
+        char buf[96];   /* 必须 >= 48：app_frame_json 在 out_sz<48 时直接返回 -1 */
+        seq++;
+        int n=app_frame_json(buf,sizeof(buf),seq,t_x100,h_x100);
+        if(n>0){
+          esp_send((uint8_t*)buf,(uint16_t)n);
+        }
+      }
+    }
+    
+    /* ---- 5. 已发包数（只在变化时重画） ---- */
+    static uint32_t last_tx = 0xFFFFFFFF;
+    uint32_t tx = esp_get_ok_count();
+    if (tx != last_tx)
+    {
+      last_tx = tx;
+      oled_show_num(24, 0, tx, 5, 16);
+      oled_refresh();
+    }
+
+    /* ---- 6. WiFi 状态行：只在状态变化时重画 ---- */
+    static esp_state_t last_esp = (esp_state_t)0xFF;
+    if (esp_get_state() != last_esp)
+    {
+      last_esp = esp_get_state();
+      char sst[16];
+      snprintf(sst, sizeof sst, "WiFi:%-5s", esp_state_str());
+      oled_show_string(0, 48, sst, 12);
+      oled_refresh();
+    }
+
+    /* ---- 7. LED 心跳：500ms 翻转 ---- */
     if (now - t_led >= 500)
     {
       t_led = now;
@@ -192,8 +244,8 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-/**重定向 printf 到USART1
- *已勾 MircoLIB 无需处理半主机模式
+/**重定向 printf 到 USART1
+ *已勾 MicroLIB 无需处理半主机模式
  */
 int fputc(int ch, FILE *f)
 {
